@@ -6,18 +6,41 @@
 //
 //   1. peer multiple   the price the market already pays for one dollar of TVL in this protocol's
 //                      category: the median mcap_usd / tvl_usd of the protocols in the same category
-//                      whose token trades. Small categories are shrunk toward the whole field's
-//                      median, so one loud comparable cannot set a category's price:
-//                        m = (n * m_cat + SHRINK * m_field) / (n + SHRINK)
+//                      whose token trades, with that sample's tails trimmed first. Small categories
+//                      are shrunk toward the whole field's median, so one loud comparable cannot
+//                      set a category's price:
+//                        m = (n * m_cat + SHRINK * m_field) / (n + SHRINK)  (in log space)
 //   2. momentum         the last seven days of TVL growth, weighted and clipped, so a single spike
 //                      moves a rank but cannot own it:  1 + (growth / 100) * GROWTH_WEIGHT
 //   3. patience         how long the protocol has run while recording no token, as a premium: a
 //                      protocol that survived years without issuing one carries a wider claim base
-//                      and a longer discount window:   PATIENCE_FLOOR + min(age, PATIENCE_DAYS) / PATIENCE_DAYS * PATIENCE_RANGE
+//                      and a longer discount window:
+//                        PATIENCE_FLOOR + min(age, PATIENCE_DAYS) / PATIENCE_DAYS * PATIENCE_RANGE
 //   4. implied value   tvl_usd * m * momentum * patience, rounded to whole dollars.
 //
 // Every row carries the three multipliers it was priced with, so a reader can re-derive the number
 // on paper, and the dashboard prints the peer table the multiples came from.
+//
+// This revision changes the peer table's statistics in two ways.
+//
+// First, every category's sample of market-cap-per-dollar-of-TVL ratios is winsorised before its
+// median is taken. A category with five or more comparables drops the lowest tenth and the highest
+// tenth of its ratios, at least one value from each end, and takes the median of what is left; a
+// category with fewer than five keeps every value. One protocol trading at four hundred times its
+// TVL, or one trading at a hundredth, then cannot set the price of its whole category: it leaves the
+// sample the median is read from and stays in the count. The log-space shrinkage toward the field
+// median and the crowding discount are applied to that winsorised median exactly as before. The
+// whole field's median is still taken over every comparable, because it is the anchor the shrinkage
+// leans on rather than a price for any one category.
+//
+// Second, every board row and every radar row carries a `sample` block that states the size of the
+// evidence under its price: `comparables`, the live protocols that priced the category;
+// `winsorised`, how many of those ratios were trimmed; and `field_sample`, the live protocols that
+// priced the whole field. The row's `model` block keeps every field it had, so a reader who reads
+// only the multipliers still sees the whole arithmetic.
+//
+// `selfTest()` checks the properties the rest of this file relies on and throws when one stops
+// holding, so a main.ts run fails at the start of --check rather than after a bad board is written.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -79,13 +102,29 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it, and this is the model it was priced with. */
-export const MODEL_VERSION = 'radar-2-peer-fdv';
+export const MODEL_VERSION = 'radar-3-winsorised-peers';
 
 /** The board's cap: the gate takes up to 4000 rows, and the snapshot's pre-token set is smaller. */
 export const BOARD_ROWS = 360;
 
 /** How many live-token protocols the comparables view carries, by market cap. */
 export const LIVE_ROWS = 30;
+
+/** The smallest sample a category needs before its tails are trimmed: below it, nothing is dropped. */
+export const WINSOR_MIN_SAMPLE = 5;
+
+/** The share of a category's sample trimmed from each end before the median is taken. */
+export const WINSOR_FRACTION = 0.1;
+
+/** The evidence under one row's price: the size of the category sample and of the field sample. */
+export interface RowSample {
+  /** Live protocols in the category whose token trades and whose market cap is known. */
+  comparables: number;
+  /** How many of those ratios the winsorising trimmed, counting both ends. */
+  winsorised: number;
+  /** Live protocols that priced the whole field, the anchor of the shrinkage. */
+  field_sample: number;
+}
 
 /** A farm step: the action, what it costs, and how long it takes. */
 export interface FarmStep {
@@ -122,6 +161,7 @@ export interface BoardRow {
     patience_multiplier: number;
     age_days: number | null;
   };
+  sample: RowSample;
   farm_steps: string[];
 }
 
@@ -144,6 +184,7 @@ export interface RadarRow {
   crowding_multiplier: number;
   growth_multiplier: number;
   patience_multiplier: number;
+  sample: RowSample;
   farm_steps: string[];
 }
 
@@ -164,7 +205,7 @@ export interface PeerRow {
   category: string;
   /** Protocols in this category whose token trades and whose TVL is known. */
   count: number;
-  /** Their median mcap/tvl, or null when the category has no comparable at all. */
+  /** Their median mcap/tvl, tails trimmed, or null when the category has no comparable at all. */
   median: number | null;
   /** The multiple this model uses: the shrunken, clipped value. */
   used: number;
@@ -215,6 +256,20 @@ export function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = sorted.length >> 1;
   return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+}
+
+/**
+ * One category's ratios with their tails trimmed: with WINSOR_MIN_SAMPLE or more values, the lowest
+ * tenth and the highest tenth are dropped, at least one value from each end; with fewer, nothing is
+ * dropped. The middle stays untouched, so the median is the sample's own and not the extreme's.
+ */
+export function winsorise(values: number[]): { kept: number[]; trimmed: number } {
+  const n = values.length;
+  if (n < WINSOR_MIN_SAMPLE) return { kept: [...values], trimmed: 0 };
+  const cut = Math.max(1, Math.floor(n * WINSOR_FRACTION));
+  const sorted = [...values].sort((a, b) => a - b);
+  const kept = sorted.slice(cut, n - cut);
+  return { kept, trimmed: n - kept.length };
 }
 
 const clamp = (n: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, n));
@@ -275,11 +330,18 @@ function categoryKey(p: SnapshotProtocol): string {
 }
 
 /**
- * The peer table: for every category, the median mcap/tvl of the protocols in it whose token
- * trades, the whole field's median, and the multiple the model uses for each category. This is the
- * value model's only input that is not one protocol's own record, and it is the snapshot's own.
+ * The peer table: for every category, the winsorised median mcap/tvl of the protocols in it whose
+ * token trades, the whole field's median, and the multiple the model uses for each category. This is
+ * the value model's only input that is not one protocol's own record, and it is the snapshot's own.
  */
-export function buildPeers(snapshot: Snapshot): { peers: PeerRow[]; fieldMedian: number; fieldSample: number; used: Map<string, number>; crowd: Map<string, number> } {
+export function buildPeers(snapshot: Snapshot): {
+  peers: PeerRow[];
+  fieldMedian: number;
+  fieldSample: number;
+  used: Map<string, number>;
+  crowd: Map<string, number>;
+  trimmed: Map<string, number>;
+} {
   const ratios: number[] = [];
   const byCategory = new Map<string, number[]>();
   for (const p of snapshot.protocols) {
@@ -303,11 +365,15 @@ export function buildPeers(snapshot: Snapshot): { peers: PeerRow[]; fieldMedian:
   const fieldMedian = ratios.length > 0 ? median(ratios) : 0.2;
   const used = new Map<string, number>();
   const crowd = new Map<string, number>();
+  const trimmed = new Map<string, number>();
   const peers: PeerRow[] = [];
   const categories = new Set<string>([...byCategory.keys(), ...pretenders.keys()]);
   for (const category of categories) {
     const list = byCategory.get(category) ?? [];
-    const own = list.length > 0 ? median(list) : fieldMedian;
+    // The category's own price of TVL: its sample with the tails trimmed, so one protocol at four
+    // hundred times its TVL leaves the median and stays in the count.
+    const sample = winsorise(list);
+    const own = sample.kept.length > 0 ? median(sample.kept) : fieldMedian;
     // Shrinkage in log space: a category's own median is worth n votes, the whole field's median
     // MODEL.shrink votes, so one comparable moves its category a little and a deep sample moves it
     // most of the way. Ratios are multiplicative, so the blend is geometric.
@@ -318,6 +384,7 @@ export function buildPeers(snapshot: Snapshot): { peers: PeerRow[]; fieldMedian:
     const crowdValue = 1 / (1 + MODEL.crowd_weight * Math.max(0, pretenderCount - 1));
     used.set(category, value);
     crowd.set(category, crowdValue);
+    trimmed.set(category, sample.trimmed);
     peers.push({
       category,
       count: list.length,
@@ -329,7 +396,7 @@ export function buildPeers(snapshot: Snapshot): { peers: PeerRow[]; fieldMedian:
     });
   }
   peers.sort((a, b) => b.pretenders - a.pretenders || b.count - a.count || (a.category < b.category ? -1 : 1));
-  return { peers, fieldMedian: round4(fieldMedian), fieldSample: ratios.length, used, crowd };
+  return { peers, fieldMedian: round4(fieldMedian), fieldSample: ratios.length, used, crowd, trimmed };
 }
 
 /** The three multipliers and the implied value one protocol gets under `model`. */
@@ -385,7 +452,7 @@ export interface BoardSummary {
 /** The protocols the board ranks, strongest first, with ranks 1..n. */
 export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): BoardRow[] {
   const index = bySlug(snapshot.protocols);
-  const { peers, fieldMedian, used, crowd } = buildPeers(snapshot);
+  const { peers, fieldMedian, fieldSample, used, crowd, trimmed } = buildPeers(snapshot);
   const counts = new Map<string, number>(peers.map((p) => [p.category, p.count]));
   const medians = new Map<string, number | null>(peers.map((p) => [p.category, p.median]));
   const chosen = new Map<string, SnapshotProtocol>();
@@ -433,6 +500,11 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
         growth_multiplier: s.growthMult,
         patience_multiplier: s.patienceMult,
         age_days: s.age,
+      },
+      sample: {
+        comparables: counts.get(key) ?? 0,
+        winsorised: trimmed.get(key) ?? 0,
+        field_sample: fieldSample,
       },
       farm_steps: farmSteps(s.p, s.age).map(stepText),
     };
@@ -565,6 +637,7 @@ export function radarRow(row: BoardRow): RadarRow {
     crowding_multiplier: row.model.crowding_multiplier,
     growth_multiplier: row.model.growth_multiplier,
     patience_multiplier: row.model.patience_multiplier,
+    sample: row.sample,
     farm_steps: row.farm_steps,
   };
 }
@@ -660,4 +733,128 @@ export function boardIssue(board: BoardRow[], snapshot: Snapshot): string | null
 /** A compact data.js: the dashboard's whole dataset as one script, no fetch and no network. */
 export function dataScript(radar: RadarData): string {
   return `window.RADAR=${JSON.stringify(radar)};\n`;
+}
+
+/**
+ * The properties this model relies on, checked against small figures of their own so a run needs no
+ * snapshot to test them. Each check throws with the numbers it saw when the property stops holding,
+ * and the returned names are the properties that passed.
+ */
+export function selfTest(): string[] {
+  const passed: string[] = [];
+  const near = (a: number, b: number): boolean => Math.abs(a - b) < 1e-9;
+
+  // median: an odd list returns its middle value, an even list the mean of its middle two.
+  const odd = median([3, 1, 2]);
+  if (!near(odd, 2)) throw new Error(`selfTest: median of an odd list is ${odd}, expected 2`);
+  passed.push('median of an odd list');
+
+  const even = median([4, 1, 3, 2]);
+  if (!near(even, 2.5)) throw new Error(`selfTest: median of an even list is ${even}, expected 2.5`);
+  passed.push('median of an even list');
+
+  // winsorising: five ratios drop one from each end and keep the middle three untouched.
+  const tailed = winsorise([1, 2, 3, 4, 400]);
+  if (tailed.trimmed !== 2) throw new Error(`selfTest: winsorise trimmed ${tailed.trimmed} of 5 ratios, expected 2`);
+  if (tailed.kept.length !== 3 || tailed.kept[0] !== 2 || tailed.kept[1] !== 3 || tailed.kept[2] !== 4) {
+    throw new Error(`selfTest: winsorise kept [${tailed.kept.join(', ')}] of [1, 2, 3, 4, 400], expected [2, 3, 4]`);
+  }
+  passed.push('winsorise drops the tails and keeps the middle');
+
+  // winsorising: a sample below the minimum keeps every value, and a deep sample trims only its ends.
+  const short = winsorise([1, 2, 3, 4]);
+  if (short.trimmed !== 0 || short.kept.length !== 4) {
+    throw new Error(`selfTest: winsorise trimmed ${short.trimmed} of 4 ratios, expected none`);
+  }
+  const deep = winsorise([1, 2, 3, 4, 5, 6, 7, 8, 9, 1000]);
+  if (deep.trimmed !== 2 || deep.kept[0] !== 2 || deep.kept[deep.kept.length - 1] !== 9) {
+    throw new Error(`selfTest: winsorise on 10 ratios kept [${deep.kept.join(', ')}], expected [2..9]`);
+  }
+  passed.push('winsorise leaves a short sample and a deep sample alone at its ends');
+
+  // impliedValue: a positive whole number of dollars for a priced protocol.
+  const asOf = '2026-11-14';
+  const protocol = (slug: string, tvl: number): SnapshotProtocol => ({
+    slug,
+    name: slug,
+    category: 'Lending',
+    chains: ['Ethereum'],
+    tvl_usd: tvl,
+    change_7d: 0,
+    mcap_usd: null,
+    listed_at: '2024-01-01',
+    gecko_id: null,
+    symbol: null,
+  });
+  /** A protocol whose token trades: it prices its category instead of being priced by it. */
+  const live = (slug: string, tvl: number, mcap: number): SnapshotProtocol => ({
+    ...protocol(slug, tvl),
+    mcap_usd: mcap,
+    gecko_id: `gecko-${slug}`,
+    symbol: slug.toUpperCase(),
+  });
+  const peers = new Map<string, number>([['Lending', 0.5]]);
+  const crowd = new Map<string, number>([['Lending', 1]]);
+  const small = impliedValue(protocol('small', 1_000_000), asOf, peers, crowd, 0.5).implied;
+  if (!Number.isSafeInteger(small) || small <= 0) throw new Error(`selfTest: implied value is ${small}, expected a positive whole number`);
+  passed.push('implied value is a positive whole number');
+
+  const large = impliedValue(protocol('large', 4_000_000), asOf, peers, crowd, 0.5).implied;
+  if (!(large > small)) throw new Error(`selfTest: implied value did not rise with TVL: ${small} at $1M, ${large} at $4M`);
+  passed.push('implied value rises with TVL');
+
+  // boardIssue: the model's own board passes, and a board whose second row outranks its first fails.
+  const fixture: Snapshot = {
+    as_of: asOf,
+    source: 'selfTest fixture',
+    floor_usd: 50_000_000,
+    protocols: [
+      // Five live comparables in one category, the last of them a four hundred fold outlier whose
+      // tail the winsorising has to drop: the sample's own median is three tenths of its TVL.
+      live('live-one', 1_000_000_000, 100_000_000),
+      live('live-two', 1_000_000_000, 200_000_000),
+      live('live-three', 1_000_000_000, 300_000_000),
+      live('live-four', 1_000_000_000, 400_000_000),
+      live('live-five', 10_000_000, 40_000_000),
+      protocol('pre-one', 900_000_000),
+      protocol('pre-two', 400_000_000),
+      protocol('pre-three', 120_000_000),
+    ],
+    watchlist: ['pre-one', 'pre-two'],
+  };
+  const board = buildBoard(fixture);
+  const own = boardIssue(board, fixture);
+  if (own !== null) throw new Error(`selfTest: boardIssue refused the model's own board: ${own}`);
+  passed.push('boardIssue accepts the model\'s own board');
+
+  const sample = board[0]!.sample;
+  if (sample.comparables !== 5 || sample.winsorised !== 2 || sample.field_sample !== 5) {
+    throw new Error(
+      `selfTest: a row's sample is ${sample.comparables} comparables, ${sample.winsorised} winsorised, ${sample.field_sample} in the field, expected 5, 2 and 5`,
+    );
+  }
+  passed.push('a row states the sample its price came from');
+
+  const swapped = board.map((r) => ({ ...r }));
+  const first = swapped[0]!.implied_value_usd;
+  swapped[0]!.implied_value_usd = swapped[1]!.implied_value_usd;
+  swapped[1]!.implied_value_usd = first;
+  const outOfOrder = boardIssue(swapped, fixture);
+  if (outOfOrder === null || !outOfOrder.includes('outranks')) {
+    throw new Error(`selfTest: boardIssue accepted a board whose row 2 outranks row 1, or said ${outOfOrder}`);
+  }
+  passed.push('boardIssue refuses a board whose row 2 outranks row 1');
+
+  // parseSnapshot: a document with no as_of is refused by name.
+  const document = JSON.stringify({ source: 'selfTest fixture', floor_usd: 50_000_000, protocols: [], watchlist: [] });
+  let refused = '';
+  try {
+    parseSnapshot(document);
+  } catch (err) {
+    refused = err instanceof Error ? err.message : String(err);
+  }
+  if (!refused.includes('as_of')) throw new Error(`selfTest: parseSnapshot accepted a document with no as_of`);
+  passed.push('parseSnapshot refuses a document with no as_of');
+
+  return passed;
 }

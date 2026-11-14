@@ -54,6 +54,18 @@
 
   /* ---------- the arithmetic the board was priced with ---------- */
 
+  // The evidence under a price, in one line: the live protocols that priced the category, how many
+  // of their ratios the winsoriser trimmed, and how deep the whole field's sample is. Numbers only,
+  // so the line needs no escaping.
+  function sampleNote(row) {
+    var s = row.sample;
+    if (!s) return 'field median';
+    if (!s.comparables) return 'field median over ' + s.field_sample + ' live protocols';
+    return s.comparables + ' comparable' + (s.comparables === 1 ? '' : 's') +
+      (s.winsorised > 0 ? ', ' + s.winsorised + ' trimmed' : '') +
+      ' &middot; field of ' + s.field_sample;
+  }
+
   // The page re-runs the model on a row's own figures and compares the result with board.json's
   // number, so a reader can see the page and the board are the same arithmetic, not two stories.
   function recompute(row) {
@@ -220,7 +232,7 @@
       '<p>Every protocol that records no token is priced the same way, and no name is special-cased. ' +
       'A category\'s price of TVL is the median market cap per dollar of TVL among the protocols in that category whose token already trades: ' +
       '<code>peer</code>. A thin category is pulled toward the whole field\'s median, which is ' + multiple(DATA.field_median) + ' over ' + DATA.field_sample + ' live protocols, ' +
-      'so one loud comparable cannot set a price.</p>' +
+      'so one loud comparable cannot set a price either. A category with five or more comparables drops the lowest tenth and the highest tenth of its ratios before the median is taken, so one protocol trading at four hundred times its TVL cannot set the price of its category.</p>' +
       '<p>Three terms adjust it from the protocol\'s own record: seven-day TVL growth, clipped and weighted ' +
       '(weight ' + MODEL.growth_weight + '), <code>momentum</code>; how long it has run with no token, as a premium that fills over ' + MODEL.patience_days + ' days, <code>patience</code>; ' +
       'and how many pre-token protocols of the same category already stand above the floor, <code>crowding</code>, since each one is a future token competing for the same demand.</p>' +
@@ -261,6 +273,9 @@
     if (gap !== null && peer.count < 3) {
       callout.push('<b>' + peer.count + ' comparable' + (peer.count === 1 ? '' : 's') + '</b> in ' + esc(row.category || 'its category') + ': a thin sample, so the multiple is held close to the field median.');
     }
+    if (row.sample && row.sample.winsorised > 0) {
+      callout.push('<b>' + row.sample.winsorised + ' of ' + row.sample.comparables + ' ratios</b> sat at the tails of this category and were trimmed before the median, so one outsized protocol cannot set its price.');
+    }
     if (row.crowding_multiplier < 0.8) {
       callout.push('<b>' + peer.pretenders + ' pre-token protocols</b> share this category, so each row carries a ' + esc((row.crowding_multiplier * 100).toFixed(0)) + '% crowding discount.');
     }
@@ -282,7 +297,7 @@
       ' &middot; listed <b>' + esc(row.listed_at || 'not recorded') + '</b> &middot; <b>' + esc(age(row.age_days)) + '</b> with no token</div></div>' +
       '<div class="implied"><span class="label">implied value if it issued today</span>' +
       '<span class="amount">' + esc(usd(row.implied_value_usd)) + '</span>' +
-      '<span class="sub">' + esc(usd(row.tvl_usd)) + ' TVL &middot; ' + multiple(row.peer_multiple) + ' peer &middot; ' + esc(peer ? peer.count + ' comparable' + (peer.count === 1 ? '' : 's') : 'field median') + '</span></div>' +
+      '<span class="sub">' + esc(usd(row.tvl_usd)) + ' TVL &middot; ' + multiple(row.peer_multiple) + ' peer &middot; ' + sampleNote(row) + '</span></div>' +
       '</div>' +
 
       '<div class="equation">' +

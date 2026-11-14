@@ -17,7 +17,7 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { boardIssue, buildRadar, dataScript, parseSnapshot } from './lib/model.ts';
+import { boardIssue, buildRadar, dataScript, parseSnapshot, selfTest } from './lib/model.ts';
 import type { BoardRow, Snapshot } from './lib/model.ts';
 import { buildDossier } from './vendor/makefun-board.ts';
 
@@ -359,6 +359,10 @@ function checkDossierFile(out: string): string {
 
 /** Guarantee 3: verify an output directory in place, one line per check, exit 1 on the first miss. */
 function runCheck(out: string, snapshot: Snapshot): void {
+  // The model's own properties come first: a broken median or a winsoriser that eats the middle
+  // makes every number below meaningless, so it fails here, before the files are read.
+  const properties = selfTest();
+  process.stdout.write(`check self-test: ${properties.length} properties pass\n`);
   const checks: { label: string; run: () => string }[] = [
     { label: 'board', run: () => checkBoardFile(out, snapshot) },
     { label: 'screenshots', run: () => checkScreenshots(out) },

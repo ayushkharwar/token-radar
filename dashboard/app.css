@@ -30,13 +30,27 @@
 
 * { box-sizing: border-box; }
 
-html { color-scheme: dark; }
+html { color-scheme: dark; background: var(--room); }
+
+/* The scope is the room's own light, painted once behind everything and never repainted: a warm
+   wash from the radar's corner, a cool one from the far side, rings at the sweep's own pitch and a
+   dot matrix fine enough to read as instrument glass rather than decoration. */
+.scope {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    radial-gradient(1220px 560px at 78% -10%, rgba(227, 161, 69, 0.10), transparent 62%),
+    radial-gradient(940px 720px at 2% 104%, rgba(89, 185, 143, 0.075), transparent 60%),
+    repeating-radial-gradient(circle at 84% 6%, rgba(227, 161, 69, 0.05) 0 1px, transparent 1px 84px),
+    radial-gradient(rgba(232, 228, 218, 0.055) 0.5px, transparent 0.9px);
+  background-size: auto, auto, auto, 6px 6px;
+  background-repeat: no-repeat, no-repeat, no-repeat, repeat;
+}
 
 body {
   margin: 0;
-  background:
-    radial-gradient(1200px 520px at 78% -12%, rgba(227, 161, 69, 0.07), transparent 62%),
-    var(--room);
   color: var(--ink);
   font: 400 14px/1.5 var(--font-body);
   -webkit-font-smoothing: antialiased;
