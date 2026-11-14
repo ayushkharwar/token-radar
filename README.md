@@ -16,11 +16,11 @@ A token launch radar: it prices every protocol in a sealed DefiLlama snapshot th
 - Implied value is round(base times chain times momentum times maturity), with a minimum of one dollar.
 - Chain is 1 + 0.03 min(chains-1,4). Momentum is 1 + 0.30 clamp(change_7d,-40,60)/100.
 - Maturity is 0.75 + 0.25 min(age_days,1095)/1095. A missing date uses 240 days; missing growth uses zero.
-- Sigma is sqrt(sd squared + (0.5 depth log10(C/P)) squared), where depth = min(1, comparables/8). A missing peer uses sd alone. The band divides and multiplies implied value by 10^sigma.
+- Sigma is sqrt(sd squared + (0.5 log10(C/P)) squared). A missing peer uses sd alone. The band divides and multiplies implied value by 10^sigma.
 
 Winsorisation replaces each outer tenth with its boundary value when n is at least five. The tail count rounds down. Winsorisation and trimming leave this median unchanged. Values retain full precision until the final dollar rounding.
 
-The detail shows curve, peer and normalised shares. Agreement uses a depth-weighted log gap at or below 0.35 dex. The board shows bands and sorts their full width in dex. The fit view plots all kept live observations and the top 25 candidates. The detail view shows both estimates, six farm steps and a ninety-day budget. Capital counts once; gas includes thirteen weekly actions and the plan's one-off fees.
+The page shows curve, peer, normalised shares, bands and disagreement beyond 0.5 dex. The fit view plots all kept live observations and the top 25 candidates. The detail view shows both estimates and six farm steps.
 
 The watchlist is the floor. Every other independent pre-token candidate also joins the board. Names receive no special pricing. Tracking age is a maturity proxy. The snapshot does not establish launch timing, reward eligibility or supported farm assets.
 

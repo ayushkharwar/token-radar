@@ -147,9 +147,6 @@ export interface FarmStep {
   text: string;
   cost: string;
   time: string;
-  capital_usd?: number;
-  gas_usd?: number;
-  repeat_days?: number;
 }
 
 /** One row of board.json: the ranked board's row, with the arithmetic that priced it. */
@@ -195,9 +192,6 @@ export interface BoardRow {
   };
   sample: RowEvidence;
   farm_steps: string[];
-  "90_day_cost_usd": number;
-  farm_capital_usd: number;
-  farm_gas_90_day_usd: number;
 }
 
 /** The dashboard's compact view of one row: board.json's numbers, without the prose. */
@@ -232,9 +226,6 @@ export interface RadarRow {
   size_value: number;
   sample: RowEvidence;
   farm_steps: string[];
-  "90_day_cost_usd": number;
-  farm_capital_usd: number;
-  farm_gas_90_day_usd: number;
 }
 
 /** A live-token protocol: it already trades, so the board shows the market's own figure. */
@@ -511,9 +502,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
   const scored = [...chosen.values()]
     .map((p) => ({ p, ...impliedValue(p, snapshot.as_of, fit, factors, model) }));
   scored.sort((a, b) => b.implied - a.implied || b.p.tvl_usd - a.p.tvl_usd || (a.p.slug < b.p.slug ? -1 : 1));
-  return scored.map((s, i) => {
-    const steps = farmSteps(s.p, s.age);
-    return ({
+  return scored.map((s, i) => ({
     rank: i + 1,
     slug: s.p.slug,
     name: s.p.name,
@@ -555,10 +544,8 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
       kept_points: fit.n,
       clipped_points: fit.clipped,
     },
-    farm_steps: steps.map(stepText),
-    ...farmBudget(steps),
-    });
-  });
+    farm_steps: farmSteps(s.p, s.age).map(stepText),
+  }));
 }
 
 /** A step as one string: its action, its cost, its time, inside the gate's 20..600 characters. */
@@ -625,34 +612,26 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
     {
       text: 'Open a fresh wallet for this position alone, write its seed phrase on paper and keep it off every device you browse with.',
       cost: 'under $3 of gas for the first transaction',
-      time: '5 minutes', gas_usd: 3,
+      time: '5 minutes',
     },
-    { text: action, cost: `$${capital} of capital and about $${gas} of gas`, time: '15 minutes to set up', capital_usd: capital, gas_usd: gas },
+    { text: action, cost: `$${capital} of capital and about $${gas} of gas`, time: '15 minutes to set up' },
     {
       text: `Repeat one qualifying action at ${p.name} every week, a deposit, a borrow, a swap or a vote, and log actual activity; verify whether official eligibility rules count it.`,
       cost: 'about $2 of gas a week',
-      time: '10 minutes a week', gas_usd: 2, repeat_days: 7,
+      time: '10 minutes a week',
     },
     {
       text: `Hold the position at least ${hold} days, as a planning window on ${chain}; official reward timing is not recorded.`,
       cost: `the $${capital} stays in the position`,
       time: `${hold} days`,
     },
-    { text: spread, cost: `about $${extra > 0 ? gas + 2 : 0} of gas for the extra routes`, time: extra > 0 ? '30 minutes per extra chain' : '5 minutes to review', gas_usd: extra > 0 ? gas + 2 : 0 },
+    { text: spread, cost: `about $${gas + 2} of gas for the extra routes`, time: '30 minutes per extra chain' },
     {
       text: 'Write the wallet address, the dates and every transaction into a farm log, then check the protocol\'s own site for a points page before you withdraw, and claim only from the address it publishes.',
-      cost: `nothing to log, reserve about $${gas} of gas to exit`,
-      gas_usd: gas,
+      cost: 'nothing to log, plus any verified chain transaction fee',
       time: '15 minutes',
     },
   ];
-}
-
-/** Count capital once; reserve each one-off fee and thirteen weekly actions over ninety days. */
-export function farmBudget(steps: FarmStep[]) {
-  const capital = Math.max(0, ...steps.map(s => s.capital_usd ?? 0));
-  const gas = steps.reduce((sum, s) => sum + (s.gas_usd ?? 0) * (s.repeat_days ? Math.ceil(90 / s.repeat_days) : 1), 0);
-  return { "90_day_cost_usd": capital + gas, farm_capital_usd: capital, farm_gas_90_day_usd: gas };
 }
 
 /** The live-token protocols, by market cap, for the comparables view. */
@@ -709,9 +688,6 @@ export function radarRow(row: BoardRow): RadarRow {
     size_value: row.model.size_value,
     sample: row.sample,
     farm_steps: row.farm_steps,
-    "90_day_cost_usd": row["90_day_cost_usd"],
-    farm_capital_usd: row.farm_capital_usd,
-    farm_gas_90_day_usd: row.farm_gas_90_day_usd,
   };
 }
 
@@ -966,18 +942,6 @@ export function selfTest(): string[] {
   const expected = Math.pow(10, (both.wC * Math.log10(both.sizeValue) + both.wP * Math.log10(both.peer!)) / (both.wC + both.wP));
   if (!near(both.base, expected) || both.bandLow > both.implied || both.bandHigh < both.implied || both.sigma < curve.fit.scatter) throw new Error('selfTest: blend or disagreement band fails');
   passed.push('two-estimator blend and disagreement band follow their equations');
-  // The ninety-day budget counts a reused position once and reserves thirteen weekly fees.
-  const planProtocol = { ...boardFixture.protocols[12]!, tvl_usd: 40_000_000, chains: ['Base'] };
-  const singlePlan = farmSteps(planProtocol, 400);
-  const singleBudget = farmBudget(singlePlan);
-  if (singlePlan.length !== 6 || singleBudget.farm_capital_usd !== 50 || singleBudget.farm_gas_90_day_usd !== 37 || singleBudget['90_day_cost_usd'] !== 87) {
-    throw new Error('selfTest: single-chain farm budget must reserve $50 capital plus $37 gas for ninety days');
-  }
-  const multiBudget = farmBudget(farmSteps({ ...planProtocol, tvl_usd: 2_000_000_000, chains: ['Base', 'Ethereum', 'Arbitrum'] }, 400));
-  if (multiBudget.farm_capital_usd !== 150 || multiBudget.farm_gas_90_day_usd !== 55 || multiBudget['90_day_cost_usd'] !== 205) {
-    throw new Error('selfTest: multi-chain farm budget must reserve $150 capital plus $55 gas for ninety days');
-  }
-  passed.push('ninety-day farm budgets count shared capital once and all recurring and one-off gas');
   return passed;
 }
 

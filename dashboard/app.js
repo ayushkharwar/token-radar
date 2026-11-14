@@ -105,7 +105,6 @@
     growth: function (r) { return r.change_7d === null ? -9999 : r.change_7d; },
     age: function (r) { return r.age_days === null ? -1 : r.age_days; },
     terms: function (r) { return terms(r); },
-    band: function (r) { return Math.log10(r.band_high / Math.max(1, r.band_low)); },
     rank: function (r) { return r.rank; },
   };
 
@@ -157,6 +156,8 @@
 
   function rowHtml(row) {
     var chip = '<span class="chip' + (row.on_watchlist ? ' watch' : '') + '">' + esc(row.category || 'no category') + '</span>';
+    var chainCell = row.chains.length === 0 ? 'n/a'
+      : esc(row.chains[0]) + ' <span class="more">&middot; ' + row.chains.length + '</span>';
     return (
       '<tr data-slug="' + esc(row.slug) + '" tabindex="0">' +
       '<td class="rank">' + row.rank + '</td>' +
@@ -164,9 +165,11 @@
       (row.on_watchlist ? '' : '<span class="off">beyond watchlist</span>') + '</span></td>' +
       '<td class="num dim">' + esc(usd(row.tvl_usd)) + '</td>' +
       trendCell(row.change_7d) +
+      '<td class="num dim">' + esc(age(row.age_days)) + '</td>' +
+      '<td class="chaincell">' + chainCell + '</td>' +
+      '<td class="estimates"><span>curve ' + esc(usd(row.curve_value_usd)) + '</span><span>peer ' + (row.peer_value_usd === null ? 'n/a: curve only' : esc(usd(row.peer_value_usd))) + '</span><span>C/P ' + (100 * row.blend_weight_curve / (row.blend_weight_curve + row.blend_weight_peer)).toFixed(0) + '/' + (100 * row.blend_weight_peer / (row.blend_weight_curve + row.blend_weight_peer)).toFixed(0) + '%</span></td>' +
       valueCell(row) +
-      '<td class="num band-width">' + SORTS.band(row).toFixed(1) + '<small>dex</small></td>' +
-      '<td class="agreement" title="Depth-weighted estimator agreement">' + (row.estimators_agree === null ? 'C' : row.estimators_agree ? '=' : '!') + '</td>' +
+      '<td class="chev">&#8250;</td>' +
       '</tr>'
     );
   }
@@ -202,6 +205,7 @@
 
   function boardView() {
     var rows = visible();
+    var top = DATA.rows[0];
     var options = categories()
       .map(function (c) { return '<option value="' + esc(c) + '"' + (c === state.category ? ' selected' : '') + '>' + esc(c) + '</option>'; })
       .join('');
@@ -211,8 +215,16 @@
 
     var head = masthead(false) +
 
-      '<section class="method"><p>We price a possible token from a size curve and category peers, then adjust for chain reach, growth and tracking age.</p>' +
-      '<div class="fit-strip"><b>size curve B ' + FIT.b.toFixed(3) + '</b><span>scatter ' + FIT.scatter.toFixed(2) + ' dex</span><span>r2 ' + FIT.r2.toFixed(2) + '</span><span>' + FIT.n + ' of ' + FIT.first.n + ' live tokens kept</span><span>' + DATA.board_size + ' candidates / ' + DATA.watchlist_size + ' watchlist</span></div></section>' +
+      '<section class="figures">' +
+      '<div class="figure lead"><span class="label">highest conditional implied value</span>' +
+      '<span class="value"><em>' + esc(usd(top.implied_value_usd)) + '</em> &middot; ' + esc(top.name) + '</span></div>' +
+      '<div class="figure"><span class="label">the size curve</span>' +
+      '<span class="value">' + mult(pow10(FIT.b)) + ' <small>per 10x TVL</small></span></div>' +
+      '<div class="figure"><span class="label">fit scatter, one sigma</span>' +
+      '<span class="value">&plusmn;' + FIT.scatter.toFixed(2) + ' <small>dex, r&sup2; ' + FIT.r2.toFixed(2) + '</small></span></div>' +
+      '<div class="figure"><span class="label">protocols priced</span>' +
+      '<span class="value">' + DATA.board_size + ' <small>of ' + DATA.watchlist_size + ' on the watchlist</small></span></div>' +
+      '</section>' +
 
       '<div class="toolbar">' +
       '<label class="field">' + searchGlyph() +
@@ -221,7 +233,7 @@
       '<select id="chain" aria-label="chain"><option value="all">every chain</option>' + chainOptions + '</select>' +
       '<label class="toggle' + (state.watchOnly ? ' on' : '') + '"><input type="checkbox" id="watch"' + (state.watchOnly ? ' checked' : '') + '> watchlist only</label>' +
       '<select id="sort" aria-label="sort">' +
-      ['implied', 'tvl', 'growth', 'age', 'terms', 'band'].map(function (k) {
+      ['implied', 'tvl', 'growth', 'age', 'terms'].map(function (k) {
         return '<option value="' + k + '"' + (state.sort === k ? ' selected' : '') + '>sort: ' + k + '</option>';
       }).join('') +
       '</select>' +
@@ -229,45 +241,18 @@
       '<a class="fitlink" href="#/fit">the two estimators &#8250;</a>' +
       '</div>' +
 
-      '<div class="board-layout"><div class="board">' + gridHtml(rows) + '</div><aside class="board-aside">' + bandChart(rows) + claimsView() + '</aside></div>' +
+      '<div class="board">' + gridHtml(rows) + '</div>' +
       noteView();
 
     return head;
   }
 
-  function bandChart(rows) {
-    var top = rows.slice(0, 5);
-    var lo = Math.floor(Math.min.apply(null, top.map(function (r) { return Math.log10(Math.max(1, r.band_low)); })));
-    var hi = Math.ceil(Math.max.apply(null, top.map(function (r) { return Math.log10(r.band_high); })));
-    if (!top.length) return '<h2>No rows to compare</h2>';
-    function x(v) { return 30 + (Math.log10(Math.max(1, v)) - lo) / Math.max(1, hi - lo) * 250; }
-    var svg = '<svg class="band-chart" viewBox="0 0 310 280" role="img" aria-label="Top five visible rows: implied values and one sigma bands on a shared log dollar scale">';
-    for (var d = lo; d <= hi; d++) svg += '<line class="guide" x1="' + x(pow10(d)) + '" x2="' + x(pow10(d)) + '" y1="10" y2="249"/><text x="' + x(pow10(d)) + '" y="272" text-anchor="middle">' + usd(pow10(d)) + '</text>';
-    top.forEach(function (r, i) {
-      var y = 23 + i * 47;
-      svg += '<text class="band-name" x="12" y="' + y + '">#' + r.rank + ' ' + esc(r.name) + '</text><text x="294" y="' + y + '" text-anchor="end">' + usd(r.implied_value_usd) + '</text>';
-      svg += '<line class="interval" x1="' + x(r.band_low) + '" x2="' + x(r.band_high) + '" y1="' + (y+15) + '" y2="' + (y+15) + '"/>';
-      [r.band_low, r.band_high].forEach(function (v) { svg += '<line class="cap" x1="' + x(v) + '" x2="' + x(v) + '" y1="' + (y+10) + '" y2="' + (y+20) + '"/>'; });
-      svg += '<circle cx="' + x(r.implied_value_usd) + '" cy="' + (y+15) + '" r="3.5"/>';
-    });
-    return '<section class="band-summary"><h2>Five rows, visible uncertainty</h2><p>Top of this view. Dot: value. Line: one sigma.</p>' + svg + '</svg><p>Shared log dollar scale. Overlap limits rank confidence.</p><p>C/P marks: = agree; ! disagree; C curve only.</p></section>';
-  }
-
-  function claimsView() {
-    return '<section class="claims"><h2>What this board claims</h2><ul>' +
-      '<li>Prices a possible token from market TVL pricing.</li>' +
-      '<li>Snapshot only; no name exceptions or outside data.</li>' +
-      '<li>One sigma: market disagreement, not a wrong row.</li>' +
-      '<li>Watchlist floor: ' + DATA.early_size + '/' + DATA.board_size + ' rows extend early coverage.</li>' +
-      '<li>No launch prediction or investment advice.</li></ul></section>';
-  }
-
   function noteView() {
     return '<section class="note"><div><h2>two estimates, one conditional value</h2>' +
       '<p>C = 10^(a + b log10 TVL). P = TVL times a category median market-cap/TVL multiple. The outer tenth of peer multiples is winsorised when n is at least five; the tail count rounds down. The median is shrunk toward the whole field median by n/(n+6), then clamped to 0.02 to 8.</p>' +
-      '<p>wC = nC/(nC+12); wP = nP/(nP+6). Base = 10^((wC log10 C + wP log10 P)/(wC+wP)). No category comparable means curve only. Depth = min(1, peers/8). Implied = round(base times chain times momentum times maturity).</p>' +
+      '<p>wC = nC/(nC+12); wP = nP/(nP+6). Base = 10^((wC log10 C + wP log10 P)/(wC+wP)). No category comparable means curve only. Implied = round(base times chain times momentum times maturity).</p>' +
       '<p>Chain = 1 + 0.03 min(chains-1,4). Momentum = 1 + 0.30 clamp(change_7d,-40,60)/100; missing growth is zero. Maturity = 0.75 + 0.25 min(age_days,1095)/1095; a missing date uses 240 days.</p></div>' +
-      '<div><h2>uncertainty and scope</h2><p>Sigma = sqrt(sd squared + (0.5 depth log10(C/P)) squared). Curve-only rows use sd. The band is round(implied / 10^sigma) to round(implied times 10^sigma). It is a model spread, not a calibrated probability or a price target.</p>' +
+      '<div><h2>uncertainty and scope</h2><p>Sigma = sqrt(sd squared + (0.5 log10(C/P)) squared). Curve-only rows use sd. The band is round(implied / 10^sigma) to round(implied times 10^sigma). It is a model spread, not a calibrated probability or a price target.</p>' +
       '<p>The snapshot records no token for these candidates. Value assumes a launch with the current record; it predicts neither a launch nor its date. The watchlist is a floor; independent candidates beyond it also rank.</p>' +
       '<p>Farm actions are category-based research plans. Verify supported assets, eligibility and official instructions before using capital; the snapshot contains no reward rules.</p><a href="#/fit">Inspect the two estimators and the fit &#8250;</a></div></section>';
   }
@@ -392,14 +377,14 @@
       '<tr class="before"><td class="name">before clipping</td><td class="num">' + FIT.first.a.toFixed(4) + ' + ' + FIT.first.b.toFixed(4) + 'x, &sigma; ' + FIT.first.scatter.toFixed(4) + '</td></tr>' +
       '</tbody></table>' +
       '<p class="slopesay">A protocol ten times larger is worth ' + slope.toFixed(2) + ' times as much on the fitted curve. Each extra dex of TVL adds ' + FIT.b.toFixed(3) + ' dex of fitted market cap.</p>' +
-      '<p class="bandsay">Each band combines curve scatter and half the depth-weighted log gap between C and P. Depth = min(1, peers/8). Greater disagreement widens the band. Curve-only rows use sd alone; the spread is not a calibrated probability.</p>' +
+      '<p class="bandsay">Each band combines curve scatter and half the log gap between C and P. Greater disagreement widens the band. Curve-only rows use sd alone; the spread is not a calibrated probability.</p>' +
       '</section>' +
       '</div>' +
 
       '<section class="fitwhy">' +
       '<h3>why use two estimators</h3>' +
       '<p>The curve measures the field\'s size relationship; the peer estimator measures category pricing without using that line. Combining them reduces dependence on either assumption and makes their disagreement visible.</p>' +
-      '<p>The raw depth weights are normalised to sum to one in log space. The detail shows C/P percentage shares for each row; a missing category sample gives the curve 100 per cent. The field median uses all eligible live points, including regression outliers.</p>' +
+      '<p>The raw depth weights are normalised to sum to one in log space. The board prints C/P percentage shares for each row; a missing category sample gives the curve 100 per cent. The field median uses all eligible live points, including regression outliers.</p>' +
       '</section>' +
       '</div>';
   }
@@ -443,7 +428,7 @@
       '<div class="detail-head">' +
       '<div><span class="rank-stamp">rank ' + row.rank + ' of ' + DATA.board_size + (row.on_watchlist ? ' &middot; on the watchlist' : ' &middot; beyond watchlist') + '</span>' +
       '<h2>' + esc(row.name) + '</h2>' +
-      '<div class="sub">' + esc(row.category || 'no category') + ' &middot; ' + '<span title="' + esc(row.chains.join(', ')) + '">' + esc(row.chains.slice(0, 3).join(', ') || 'chain not recorded') + (row.chains.length > 3 ? ' +' + (row.chains.length - 3) + ' more' : '') + '</span>' +
+      '<div class="sub">' + esc(row.category || 'no category') + ' &middot; ' + esc(row.chains.join(', ') || 'chain not recorded') +
       ' &middot; tracking starts <b>' + esc(row.listed_at || 'not recorded') + '</b> &middot; <b>' + esc(age(row.age_days)) + '</b> tracking age</div></div>' +
       '<div class="implied"><span class="label">implied value if it issued today</span>' +
       '<span class="amount">' + esc(usd(row.implied_value_usd)) + '</span>' +
@@ -454,13 +439,13 @@
       '<u style="left:' + pos(row.implied_value_usd).toFixed(1) + '%"></u></span>' +
       '<span class="ends"><span>' + esc(exactUsd(row.band_low)) + '</span><span class="mid">' + esc(exactUsd(row.implied_value_usd)) + ' implied</span><span>' + esc(exactUsd(row.band_high)) + '</span></span></div>' +
 
-      '<div class="estimator-pair"><div><span class="label">C: size curve</span><b>' + esc(usd(row.curve_value_usd)) + '</b><span>depth weight ' + row.blend_weight_curve.toFixed(4) + '; blend share ' + (100 * row.blend_weight_curve / (row.blend_weight_curve + row.blend_weight_peer)).toFixed(0) + '%</span></div>' +
-      '<div><span class="label">P: peer multiple</span><b>' + esc(usd(row.peer_value_usd)) + '</b><span>' + row.sample.comparables + ' comparables; weight ' + row.blend_weight_peer.toFixed(4) + '; multiple ' + row.category_multiplier.toFixed(4) + 'x; blend share ' + (100 * row.blend_weight_peer / (row.blend_weight_curve + row.blend_weight_peer)).toFixed(0) + '%</span></div></div>' +
-      '<p class="verdict">' + (row.estimators_agree === null ? 'No category comparable: the curve alone sets the base.' : row.estimators_agree ? 'The depth-weighted estimator gap is within ' + MODEL.agree_dex + ' dex.' : 'The depth-weighted estimator gap exceeds ' + MODEL.agree_dex + ' dex; it widens the band.') + '</p>' +
+      '<div class="estimator-pair"><div><span class="label">C: size curve</span><b>' + esc(usd(row.curve_value_usd)) + '</b><span>depth weight ' + row.blend_weight_curve.toFixed(4) + '</span></div>' +
+      '<div><span class="label">P: peer multiple</span><b>' + esc(usd(row.peer_value_usd)) + '</b><span>' + row.sample.comparables + ' comparables; weight ' + row.blend_weight_peer.toFixed(4) + '; multiple ' + row.category_multiplier.toFixed(4) + 'x</span></div></div>' +
+      '<p class="verdict">' + (row.estimators_agree === null ? 'No category comparable: the curve alone sets the base.' : row.estimators_agree ? 'The two estimators agree within 0.5 dex.' : 'The two estimators disagree by more than 0.5 dex; their gap widens the band.') + '</p>' +
       '<div class="equation">' +
       '<div class="term"><span class="t-label">five-factor equation</span><span class="t-value">C^alpha &times; P^(1-alpha) &times; chain &times; momentum &times; maturity</span><span class="t-note">alpha = wC / (wC+wP); no peer means alpha = 1 and P term = 1</span></div>' +
       '<div class="term"><span class="t-label">numeric product, rounded to dollars</span><span class="t-value">' + esc(usd(calc.base)) + ' &times; ' + row.chain_multiplier.toFixed(2) + ' &times; ' + row.growth_multiplier.toFixed(5) + ' &times; ' + row.maturity_multiplier.toFixed(5) + ' = ' + esc(usd(row.implied_value_usd)) + '</span><span class="t-note">base = depth-weighted geometric blend; ' + (calc.value === row.implied_value_usd ? 'matches board.json' : 'arithmetic mismatch') + '</span></div>' +
-      '<div class="term"><span class="t-label">sigma and band</span><span class="t-value">' + row.sigma_dex.toFixed(4) + ' dex; ' + esc(usd(row.band_low)) + ' to ' + esc(usd(row.band_high)) + '</span><span class="t-note">depth = min(1, peers/8); sigma = sqrt(sd^2 + (0.5 depth log10(C/P))^2); curve only: sd</span></div></div>' +
+      '<div class="term"><span class="t-label">sigma and band</span><span class="t-value">' + row.sigma_dex.toFixed(4) + ' dex; ' + esc(usd(row.band_low)) + ' to ' + esc(usd(row.band_high)) + '</span><span class="t-note">sigma = sqrt(sd^2 + (0.5 log10(C/P))^2); curve only: sd</span></div></div>' +
 
       '<div class="detail-grid">' +
       '<section class="panel"><h3>live protocols in this category, and where they sit</h3>' +
@@ -469,7 +454,7 @@
       '</tbody></table>' +
       (callout.length ? '<p class="callout">' + callout.join(' ') + '</p>' : '') +
       '</section>' +
-      '<section class="panel"><h3>how to farm it before the token</h3><p class="farm-budget">To farm this for 90 days: about ' + exactUsd(row.farm_capital_usd) + ' of capital and ' + exactUsd(row.farm_gas_90_day_usd) + ' of gas.</p><p class="budget-note">Capital stays at risk. Gas includes 13 weekly actions and an exit reserve. Total budget: ' + exactUsd(row['90_day_cost_usd']) + '.</p><ol class="steps">' + steps + '</ol></section>' +
+      '<section class="panel"><h3>how to farm it before the token</h3><ol class="steps">' + steps + '</ol></section>' +
       '</div>' +
       '<p class="footlink"><a href="#/fit">the size curve this row was priced on &#8250;</a></p>' +
       '</div>';
@@ -536,16 +521,17 @@
   function gridHtml(rows) {
     return (
       '<table class="grid"><colgroup>' +
-      '<col style="width:5%"><col style="width:29%"><col style="width:11%"><col style="width:13%">' +
-      '<col style="width:27%"><col style="width:10%"><col style="width:5%">' +
+      '<col style="width:52px"><col style="width:280px"><col style="width:100px"><col style="width:122px">' +
+      '<col style="width:86px"><col style="width:140px"><col style="width:190px"><col style="width:190px"><col style="width:22px">' +
       '</colgroup><thead><tr>' +
-      headerCell('rank', 'rank', 'rank') + '<th scope="col">protocol / category</th>' + headerCell('tvl', 'TVL') +
-      headerCell('growth', 'seven days') + headerCell('implied', 'implied value / band') + headerCell('band', 'band') + '<th scope="col">C/P</th>' +
+      headerCell('rank', 'rank', 'rank') + headerCell('implied', 'protocol') + headerCell('tvl', 'tvl') +
+      headerCell('growth', 'seven days') + headerCell('age', 'age') + '<th scope="col">chains</th>' +
+      '<th scope="col">curve / peer / share</th>' + headerCell('implied', 'implied value, band') + '<th scope="col"></th>' +
       '</tr></thead><tbody>' +
       (rows.length === 0
-        ? '<tr><td colspan="7" class="empty">No protocol matches those filters. Clear the search or pick another category.</td></tr>'
+        ? '<tr><td colspan="9" class="empty">No protocol matches those filters. Clear the search or pick another category.</td></tr>'
         : rows.map(rowHtml).join('')) +
-      '</tbody></table><p class="agreement-legend"><b class="disagree">!</b> disagree &nbsp; = agree &nbsp; C curve only. Depth-weighted gap threshold: ' + MODEL.agree_dex + ' dex. Band column: full width in dex.</p>'
+      '</tbody></table><p class="agreement-legend"><b class="disagree">!</b> Estimators differ by more than 0.5 dex. C/P shows normalised blend shares. No peer means curve only. Bands include estimator disagreement.</p>'
     );
   }
 
@@ -585,9 +571,6 @@
     if (!board) return;
     var rows = visible();
     board.innerHTML = gridHtml(rows);
-    document.querySelector('.board-aside').innerHTML = bandChart(rows) + claimsView();
-    var sort = document.getElementById('sort');
-    if (sort) sort.value = state.sort;
     var count = document.querySelector('.count');
     if (count) count.innerHTML = '<b>' + rows.length + '</b> rows shown';
     var toggle = document.querySelector('.toggle');
