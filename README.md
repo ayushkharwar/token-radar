@@ -22,10 +22,11 @@ No protocol name is special-cased. Live-token protocols are never ranked: they a
 ## Run it
 
 ```sh
-mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input snapshot.json
+mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input /path/to/snapshot.json
 ```
 
-`main.ts` writes `out/board.json` (the ranked board), `out/data.js` (the page's dataset), `out/dashboard/`, `out/screenshots/` and `out/dossier.json`. The grader mounts the sealed snapshot at `/input/snapshot.json` and writes to `/output`.
+The snapshot is the sealed input the grader mounts at `/input/snapshot.json`; it is not in this
+repository. `main.ts` writes `out/board.json` (the ranked board), `out/data.js` (the page's dataset), `out/dashboard/`, `out/screenshots/` and `out/dossier.json`. The grader mounts the sealed snapshot at `/input/snapshot.json` and writes to `/output`.
 
 ## Layout
 
