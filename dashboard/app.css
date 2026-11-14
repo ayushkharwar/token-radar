@@ -758,3 +758,56 @@ footer.colophon {
 @media (max-width: 900px) { .detail-head { flex-wrap: wrap; } .detail-head > div:first-child { max-width: 100%; } }
 
 .agreement-legend { position: fixed; bottom: 0; left: 32px; right: 32px; z-index: 5; margin: 0; padding: 8px 0; background: var(--room); border-top: 1px solid var(--hairline); }
+
+/* Radar-5 puts the evidence beside the ranking. */
+:root { --ink-faint: #8793a2; }
+.method { padding: 10px 32px 12px; border-bottom: 1px solid var(--hairline); }
+.method p { margin: 0 0 8px; color: var(--ink); font-size: 14px; }
+.fit-strip { display: flex; gap: 24px; color: var(--ink-dim); font: 11px/1.4 var(--font-num); }
+.fit-strip b { color: var(--signal); font-weight: 500; }
+.board-layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 24px; padding: 0 32px; align-items: start; }
+.board { padding: 0 0 32px; min-width: 0; }
+.grid thead th { top: 57px; letter-spacing: .06em; padding: 13px 6px; }
+.grid td { height: 58px; padding: 0 6px; }
+.grid td.rank { padding-right: 10px; }
+.grid .who .name { font-size: 14px; }
+.who .meta { gap: 5px; }
+.who .meta .off { font-size: 8px; }
+.chip { border: 0; padding: 0; font-size: 10px; }
+.grid td.num { font-size: 12px; }
+.grid td.value .whisk { margin: 4px 0; }
+.grid tbody tr:nth-child(-n+3) { background: rgba(227,161,69,.025); }
+.grid td.agreement { text-align: center; color: var(--signal); font: 16px var(--font-num); }
+.band-width small { display: block; font-size: 9px; color: var(--ink-faint); margin-top: 5px; }
+.board-aside { padding: 16px 0; position: sticky; top: 58px; }
+.board-aside h2 { font: 500 11px/1.4 var(--font-num); text-transform: uppercase; letter-spacing: .09em; color: var(--signal); margin: 0 0 8px; }
+.board-aside p { font: 11px/1.5 var(--font-body); color: var(--ink-dim); margin: 5px 0; }
+.band-chart { width: 100%; display: block; margin-top: 10px; }
+.band-chart text { font: 9px var(--font-num); fill: var(--ink-dim); }
+.band-chart .band-name { fill: var(--ink); font-size: 10px; }
+.band-chart .guide { stroke: var(--hairline-soft); }
+.band-chart .interval { stroke: var(--signal); stroke-width: 4; stroke-opacity: .4; }
+.band-chart .cap { stroke: var(--signal); }
+.band-chart circle { fill: var(--signal); }
+.claims { margin-top: 24px; border-top: 1px solid var(--hairline); padding-top: 18px; }
+.claims ul { margin: 0; padding-left: 14px; color: var(--ink-dim); font: 12px/1.55 var(--font-body); }
+.claims li { margin: 0 0 12px; padding-left: 2px; }
+.claims li::marker { color: var(--signal); }
+.agreement-legend { position: static; padding: 10px 0; font-size: 10px; }
+.farm-budget { color: var(--signal); font: 13px/1.5 var(--font-num); margin: 0 0 4px; }
+.budget-note { color: var(--ink-dim); font-size: 10px; margin: 0 0 14px; }
+.detail-grid { grid-template-columns: .9fr 1.1fr; }
+@media (max-width: 1100px) {
+  .board-layout { grid-template-columns: minmax(0, 1fr); padding: 0 16px; }
+  .board-aside { position: static; display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  .claims { margin-top: 0; }
+  .fit-strip { gap: 12px; flex-wrap: wrap; }
+  .toolbar { flex-wrap: wrap; position: static; }
+  .grid thead th { position: static; }
+}
+@media (max-width: 900px) {
+  .grid td.trend, .grid thead th:nth-child(4) { display: table-cell; }
+  .board { overflow-x: auto; }
+  .grid { min-width: 850px; }
+  .board-aside, .detail-grid { grid-template-columns: 1fr; }
+}
