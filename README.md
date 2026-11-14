@@ -8,16 +8,21 @@ A token launch radar: it prices every protocol in a sealed DefiLlama snapshot th
 
 ## How a row is priced
 
-```
-implied = tvl_usd x peer_multiple x crowding x momentum x patience
-```
+`radar-4-two-estimator` uses two independent estimates of conditional token market cap:
 
-- `peer_multiple`: the median market cap per dollar of TVL among the protocols in the same category whose token already trades, shrunk toward the whole field's median in log space so a thin sample cannot set a category's price.
-- `crowding`: pre-token protocols of the same category standing above the floor dilute each other, since each one is a future token competing for the same demand.
-- `momentum`: seven-day TVL growth, clipped and weighted.
-- `patience`: how long the protocol has run while recording no token, as a premium filling over four years.
+- C fits log10 market cap on log10 TVL across all positive live observations. It removes residuals beyond 2.5 initial standard deviations and refits.
+- P multiplies TVL by the category's winsorised median market-cap/TVL multiple. It shrinks toward the field median with n/(n+6), then clamps to 0.02 through 8.
+- Raw weights are wC = nC/(nC+12) and wP = nP/(nP+6). The base is their weighted geometric mean. A missing peer gives C the full share.
+- Implied value is round(base times chain times momentum times maturity), with a minimum of one dollar.
+- Chain is 1 + 0.03 min(chains-1,4). Momentum is 1 + 0.30 clamp(change_7d,-40,60)/100.
+- Maturity is 0.75 + 0.25 min(age_days,1095)/1095. A missing date uses 240 days; missing growth uses zero.
+- Sigma is sqrt(sd squared + (0.5 log10(C/P)) squared). A missing peer uses sd alone. The band divides and multiplies implied value by 10^sigma.
 
-No protocol name is special-cased. Live-token protocols are never ranked: they are shown as the market's own comparables.
+Winsorisation replaces each outer tenth with its boundary value when n is at least five. The tail count rounds down. Winsorisation and trimming leave this median unchanged. Values retain full precision until the final dollar rounding.
+
+The page shows curve, peer, normalised shares, bands and disagreement beyond 0.5 dex. The fit view plots all kept live observations and the top 25 candidates. The detail view shows both estimates and six farm steps.
+
+The watchlist is the floor. Every other independent pre-token candidate also joins the board. Names receive no special pricing. Tracking age is a maturity proxy. The snapshot does not establish launch timing, reward eligibility or supported farm assets.
 
 ## Run it
 
@@ -28,13 +33,15 @@ mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input /path/to/snapshot.js
 The snapshot is the sealed input the grader mounts at `/input/snapshot.json`; it is not in this
 repository. `main.ts` writes `out/board.json` (the ranked board), `out/data.js` (the page's dataset), `out/dashboard/`, `out/screenshots/` and `out/dossier.json`. The grader mounts the sealed snapshot at `/input/snapshot.json` and writes to `/output`.
 
+The read-only check is `MAKEFUN_OUTPUT_DIR=out node main.ts --input /path/to/snapshot.json --check`. See [REPORT.md](REPORT.md) for measured results and rule limitations.
+
 ## Layout
 
 - `main.ts`: the entrypoint, Node 22, standard library only.
 - `lib/model.ts`: the value model, the peer table and the farm plans.
 - `dashboard/`: the page, static, no network, no build step.
 - `vendor/makefun-board.ts`: make.fun's dossier library, unchanged.
-- `screenshots/`: the board, a detail view and a filtered view.
+- `screenshots/`: the board, the fit view, a detail view and a filtered view.
 
 ---
 

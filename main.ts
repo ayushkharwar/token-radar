@@ -26,14 +26,15 @@ const here = fileURLToPath(new URL('.', import.meta.url));
 
 /** The scorer's text cap: the dossier shows the dashboard's source up to this many bytes. */
 const TEXT_MAX_BYTES = 65_536;
-/** The scorer's screenshot caps: at most four images, each at most 512 KiB. */
-const SCREENSHOT_CAPS = { max: 4, max_bytes: 524_288 };
+/** The scorer's screenshot caps: four images, each at most 250 KB, so four of them and the 64 KiB
+ *  of source text stay inside the dossier's 1.5 MiB cap with room to spare. */
+const SCREENSHOT_CAPS = { max: 4, max_bytes: 256_000 };
 /** The scorer's dashboard caps: at most 400 files and 4 MiB in all. */
 const DASHBOARD_CAPS = { max_files: 400, max_bytes: 4_194_304 };
 /** The same caps in the shape buildDossier takes, so the write and the rebuild cannot drift. */
 const DOSSIER_CAPS = { text_max_bytes: TEXT_MAX_BYTES, screenshots: SCREENSHOT_CAPS, dashboard: DASHBOARD_CAPS };
 /** The gate's image count: the board, a detail view and a filtered view, and one spare. */
-const SHOT_COUNT = { min: 3, max: SCREENSHOT_CAPS.max };
+const SHOT_COUNT = { min: 4, max: SCREENSHOT_CAPS.max };
 /** The gate's image geometry: a long side at most 1440 and a short side at least 800 pixels. */
 const SHOT_SIDE = { max: 1440, min: 800 };
 /** The gate's row count: a board holds 100 to 4000 rows. */
@@ -287,6 +288,11 @@ function checkBoardFile(out: string, snapshot: Snapshot): string {
   }
   const shape = rowShapeIssue(rows);
   if (shape !== null) throw new Error(shape);
+  const expected = buildRadar(snapshot);
+  if (JSON.stringify(raw) !== JSON.stringify({ model_version: expected.radar.model_version, fit: expected.radar.fit, rows: expected.board })) {
+    throw new Error('board.json differs from the current two-estimator model');
+  }
+  if (readFileSync(join(out, 'data.js'), 'utf8') !== dataScript(expected.radar)) throw new Error('data.js differs from the current model');
   const board = rows as BoardRow[];
   const issue = boardIssue(board, snapshot);
   if (issue !== null) throw new Error(issue);
@@ -319,6 +325,7 @@ function checkScreenshots(out: string): string {
     const short = Math.min(sides.width, sides.height);
     if (long > SHOT_SIDE.max) throw new Error(`screenshots/${entry.name} is ${sides.width} by ${sides.height}: long side over ${SHOT_SIDE.max}`);
     if (short < SHOT_SIDE.min) throw new Error(`screenshots/${entry.name} is ${sides.width} by ${sides.height}: short side under ${SHOT_SIDE.min}`);
+    if (sides.width !== 1440 || sides.height !== 900) throw new Error(`${entry.name} must be 1440 by 900`);
     largest = Math.max(largest, bytes.length);
   }
   return `${entries.length} images, whole PNG or JPEG, largest ${Math.ceil(largest / 1024)} KiB, long side at most ${SHOT_SIDE.max}, short side at least ${SHOT_SIDE.min}`;
@@ -332,6 +339,7 @@ function checkDashboard(out: string): string {
   if (files.length === 0) throw new Error('dashboard/ holds no file');
   if (files.length > DASHBOARD_CAPS.max_files) throw new Error(`dashboard/ holds ${files.length} files, over ${DASHBOARD_CAPS.max_files}`);
   const total = files.reduce((n, f) => n + f.bytes.length, 0);
+  if (total >= TEXT_MAX_BYTES - 1024) throw new Error('dashboard source leaves too little room for dossier headings');
   if (total > DASHBOARD_CAPS.max_bytes) throw new Error(`dashboard/ holds ${total} bytes, over ${DASHBOARD_CAPS.max_bytes}`);
   for (const file of files) {
     for (const part of file.path.split('/')) {
@@ -359,10 +367,11 @@ function checkDossierFile(out: string): string {
 
 /** Guarantee 3: verify an output directory in place, one line per check, exit 1 on the first miss. */
 function runCheck(out: string, snapshot: Snapshot): void {
-  // The model's own properties come first: a broken median or a winsoriser that eats the middle
-  // makes every number below meaningless, so it fails here, before the files are read.
+  // The model's own properties come first: a fit that does not recover a known line, or a band that
+  // does not bracket its own value, makes every number below meaningless, so it fails here, before
+  // the files are read.
   const properties = selfTest();
-  process.stdout.write(`check self-test: ${properties.length} properties pass\n`);
+  process.stdout.write(`check self-test: ${properties.length} properties pass: ok\n`);
   const checks: { label: string; run: () => string }[] = [
     { label: 'board', run: () => checkBoardFile(out, snapshot) },
     { label: 'screenshots', run: () => checkScreenshots(out) },
@@ -377,7 +386,7 @@ function runCheck(out: string, snapshot: Snapshot): void {
       process.exit(1);
     }
   }
-  process.stdout.write(`check: all ${checks.length} pass, nothing written, output ${out}\n`);
+  process.stdout.write(`check: all ${checks.length} pass, nothing written, output ${out}: ok\n`);
 }
 
 /**
@@ -392,7 +401,7 @@ function writeOutput(out: string, snapshot: Snapshot): void {
   if (issue !== null) throw new Error(`the model wrote a board the gate refuses: ${issue}`);
 
   mkdirSync(out, { recursive: true });
-  writeFileSync(join(out, 'board.json'), `${JSON.stringify({ rows: board })}\n`);
+  writeFileSync(join(out, 'board.json'), `${JSON.stringify({ model_version: radar.model_version, fit: radar.fit, rows: board })}\n`);
   writeFileSync(join(out, 'data.js'), dataScript(radar));
 
   const shotsFrom = join(here, 'screenshots');
@@ -415,8 +424,9 @@ function writeOutput(out: string, snapshot: Snapshot): void {
   // Guarantee 4: one line with the numbers a reader of the run wants first.
   process.stdout.write(
     `token radar: ${snapshot.protocols.length} protocols in the snapshot, ${radar.watchlist_size} on the watchlist, ` +
-      `${board.length} rows written, ${radar.peers.length} peer categories, field median mcap/tvl ${radar.field_median} ` +
-      `over ${radar.field_sample} live protocols, output ${out}\n`,
+      `${board.length} rows written, size curve log10(mcap) = ${radar.fit.a.toFixed(4)} + ${radar.fit.b.toFixed(4)} log10(tvl) ` +
+      `over ${radar.fit.n} kept of ${radar.fit.first.n} live protocols, ${radar.fit.clipped} clipped, ` +
+      `scatter ${radar.fit.scatter.toFixed(4)} dex, r2 ${radar.fit.r2.toFixed(4)}, output ${out}\n`,
   );
 }
 
